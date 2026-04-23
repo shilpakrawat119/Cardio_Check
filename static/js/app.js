@@ -218,7 +218,9 @@ function showResult(data, inputs) {
   </div>`;
 
   const panel = document.getElementById('result-panel');
-  panel.innerHTML = html;
+  import DOMPurify from 'dompurify';
+
+  element.innerHTML = DOMPurify.sanitize(userContent);
   panel.style.display = 'block';
 
   setTimeout(() => {
