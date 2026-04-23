@@ -101,7 +101,7 @@ async function submitForm() {
   loader.classList.add('show');
 
   try {
-    const res  = await fetch('/predict', {
+    fetch(url, { timeout: 10000 })
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
@@ -218,7 +218,8 @@ function showResult(data, inputs) {
   </div>`;
 
   const panel = document.getElementById('result-panel');
-  panel.innerHTML = html;
+  const sanitizedContent = DOMPurify.sanitize(userInput);
+  element.innerHTML = sanitizedContent;
   panel.style.display = 'block';
 
   setTimeout(() => {
