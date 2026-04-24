@@ -3,8 +3,56 @@ import joblib
 import numpy as np
 import pandas as pd
 import os
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+
+DATA_DIR = Path(__file__).resolve().parent / "data"
+SCORES_PATH = DATA_DIR / "community_scores.json"
+HEART_ACTIONS = {
+    "walk_30": {"label": "30 minute brisk walk", "points": 10},
+    "veggies": {"label": "Ate 5 servings of fruits or vegetables", "points": 8},
+    "no_smoking": {"label": "Stayed smoke-free today", "points": 12},
+    "bp_check": {"label": "Checked blood pressure", "points": 6},
+    "sleep": {"label": "Slept 7+ hours", "points": 8},
+    "water": {"label": "Chose water instead of a sugary drink", "points": 5},
+    "meditation": {"label": "Did 10 minutes of stress relief", "points": 7},
+    "survey_invite": {"label": "Invited a friend to take the survey", "points": 5},
+}
+
+
+def load_scores():
+    if not SCORES_PATH.exists():
+        return {"players": {}, "activity": []}
+
+    try:
+        with SCORES_PATH.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {"players": {}, "activity": []}
+
+
+def save_scores(scores):
+    DATA_DIR.mkdir(exist_ok=True)
+    with SCORES_PATH.open("w", encoding="utf-8") as f:
+        json.dump(scores, f, indent=2)
+
+
+def public_leaderboard(scores, limit=10):
+    players = scores.get("players", {}).values()
+    ranked = sorted(players, key=lambda p: (-p.get("points", 0), p.get("name", "").lower()))
+    return [
+        {
+            "rank": index + 1,
+            "name": player.get("name", "Friend"),
+            "points": player.get("points", 0),
+            "actions": player.get("actions", 0),
+            "last_action": player.get("last_action", "Joined CardioCheck"),
+        }
+        for index, player in enumerate(ranked[:limit])
+    ]
 
 # ─────────────────────────────────────────────
 # LOAD BUNDLE (model + features + threshold)
@@ -60,6 +108,74 @@ def health():
         "threshold": round(THRESHOLD, 3) if THRESHOLD else None,
         "features":  FEATURES
     })
+
+
+@app.route("/api/heart-actions")
+def heart_actions():
+    return jsonify([
+        {"id": action_id, **action}
+        for action_id, action in HEART_ACTIONS.items()
+    ])
+
+
+@app.route("/api/leaderboard")
+def leaderboard():
+    scores = load_scores()
+    return jsonify({
+        "leaderboard": public_leaderboard(scores),
+        "activity": scores.get("activity", [])[:8],
+    })
+
+
+@app.route("/api/points", methods=["POST"])
+def add_points():
+    data = request.get_json() or {}
+    name = str(data.get("name", "")).strip()
+    action_id = str(data.get("action_id", "")).strip()
+    note = str(data.get("note", "")).strip()
+
+    if not name:
+        return jsonify({"error": "Name is required."}), 400
+    if action_id not in HEART_ACTIONS:
+        return jsonify({"error": "Choose a valid heart-healthy action."}), 400
+
+    name = name[:40]
+    note = note[:140]
+    action = HEART_ACTIONS[action_id]
+    player_key = name.lower()
+    scores = load_scores()
+    players = scores.setdefault("players", {})
+    player = players.setdefault(player_key, {
+        "name": name,
+        "points": 0,
+        "actions": 0,
+        "last_action": "",
+    })
+
+    player["name"] = name
+    player["points"] = int(player.get("points", 0)) + action["points"]
+    player["actions"] = int(player.get("actions", 0)) + 1
+    player["last_action"] = action["label"]
+
+    entry = {
+        "name": name,
+        "action": action["label"],
+        "points": action["points"],
+        "note": note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    activity = scores.setdefault("activity", [])
+    activity.insert(0, entry)
+    scores["activity"] = activity[:50]
+    save_scores(scores)
+
+    return jsonify({
+        "message": f"+{action['points']} heart points added.",
+        "player": player,
+        "leaderboard": public_leaderboard(scores),
+        "activity": scores["activity"][:8],
+    })
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
