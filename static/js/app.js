@@ -1,6 +1,8 @@
 // ── state ──────────────────────────────────────────────
 let currentStep = 0;
 const toggleVals = { smoke: 0, alco: 0, active: 1 };
+const socialState = JSON.parse(localStorage.getItem('cardio-social') || '{}');
+const inviteMessage = 'I just checked my heart risk with CardioCheck. Take the 60-second survey too:';
 
 // ── navigation ─────────────────────────────────────────
 function showPage(name) {
@@ -11,6 +13,7 @@ function showPage(name) {
   if (navEl) navEl.classList.add('active');
   window.scrollTo(0,0);
   if (name === 'checker') resetChecker();
+  if (name === 'community') initCommunity();
 }
 
 // ── toggle buttons ─────────────────────────────────────
@@ -214,6 +217,7 @@ function showResult(data, inputs) {
 
   <div class="result-actions">
     <button class="btn-retake" onclick="resetChecker()">← Retake the Test</button>
+    <button class="btn-ghost" onclick="showPage('community')">Invite Friends + Earn Points</button>
     <button class="btn-primary" onclick="showPage('about')">Learn About the Model →</button>
   </div>`;
 
@@ -300,6 +304,197 @@ function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ── community + sharing ────────────────────────────────
+function inviteUrl() {
+  return `${window.location.origin}${window.location.pathname}?invite=cardiocheck`;
+}
+
+function initCommunity() {
+  const link = document.getElementById('invite-link');
+  if (link) link.value = inviteUrl();
+  updateSocialButtons();
+  loadActions();
+  loadLeaderboard();
+}
+
+function updateSocialButtons() {
+  ['facebook', 'twitter', 'instagram'].forEach(network => {
+    const btn = document.getElementById('connect-' + network);
+    const state = document.getElementById(network + '-state');
+    const connected = Boolean(socialState[network]);
+    if (btn) btn.classList.toggle('connected', connected);
+    if (state) state.textContent = connected ? 'Connected' : 'Not connected';
+  });
+}
+
+function toggleSocial(network) {
+  socialState[network] = !socialState[network];
+  localStorage.setItem('cardio-social', JSON.stringify(socialState));
+  updateSocialButtons();
+  showToast(`${networkLabel(network)} ${socialState[network] ? 'connected' : 'disconnected'}`);
+}
+
+function networkLabel(network) {
+  return network === 'twitter' ? 'Twitter / X' : network.charAt(0).toUpperCase() + network.slice(1);
+}
+
+async function copyInviteLink() {
+  const link = inviteUrl();
+  try {
+    await navigator.clipboard.writeText(link);
+    showToast('Invite link copied');
+  } catch(e) {
+    const input = document.getElementById('invite-link');
+    if (input) {
+      input.select();
+      document.execCommand('copy');
+      showToast('Invite link copied');
+    }
+  }
+}
+
+function shareSurvey() {
+  if (navigator.share) {
+    navigator.share({
+      title: 'CardioCheck heart survey',
+      text: inviteMessage,
+      url: inviteUrl(),
+    }).catch(() => {});
+    return;
+  }
+  showPage('community');
+  copyInviteLink();
+}
+
+function shareTo(network) {
+  const url = encodeURIComponent(inviteUrl());
+  const text = encodeURIComponent(inviteMessage);
+  let shareUrl = '';
+
+  if (network === 'facebook') {
+    shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${url}`;
+  } else if (network === 'twitter') {
+    shareUrl = `https://twitter.com/intent/tweet?text=${text}&url=${url}`;
+  } else if (network === 'email') {
+    shareUrl = `mailto:?subject=Take the CardioCheck survey&body=${text}%0A%0A${url}`;
+  } else if (network === 'instagram') {
+    copyInviteLink();
+    showToast('Instagram sharing starts with a copied link');
+    return;
+  }
+
+  window.open(shareUrl, '_blank', 'noopener,noreferrer');
+}
+
+async function loadActions() {
+  const select = document.getElementById('score-action');
+  if (!select || select.dataset.loaded === 'true') return;
+
+  try {
+    const res = await fetch('/api/heart-actions');
+    const actions = await res.json();
+    select.innerHTML = actions.map(action => (
+      `<option value="${escapeHtml(action.id)}">${escapeHtml(action.label)} (+${action.points})</option>`
+    )).join('');
+    select.dataset.loaded = 'true';
+  } catch(e) {
+    select.innerHTML = '<option value="walk_30">30 minute brisk walk (+10)</option>';
+  }
+}
+
+async function loadLeaderboard() {
+  const board = document.getElementById('leaderboard-list');
+  const activity = document.getElementById('activity-list');
+  if (!board || !activity) return;
+
+  try {
+    const res = await fetch('/api/leaderboard');
+    const data = await res.json();
+    renderLeaderboard(data.leaderboard || []);
+    renderActivity(data.activity || []);
+  } catch(e) {
+    board.innerHTML = '<div class="empty-state">Leaderboard is waiting for the server.</div>';
+    activity.innerHTML = '<div class="empty-state">Log the first heart win.</div>';
+  }
+}
+
+async function submitHeartPoints() {
+  const name = document.getElementById('score-name').value.trim();
+  const actionId = document.getElementById('score-action').value;
+  const note = document.getElementById('score-note').value.trim();
+
+  if (!name) {
+    showToast('Add a display name first');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/points', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, action_id: actionId, note })
+    });
+    const data = await res.json();
+    if (data.error) {
+      showToast(data.error);
+      return;
+    }
+    document.getElementById('score-note').value = '';
+    showToast(data.message);
+    renderLeaderboard(data.leaderboard || []);
+    renderActivity(data.activity || []);
+  } catch(e) {
+    showToast('Could not add points. Is Flask running?');
+  }
+}
+
+function renderLeaderboard(players) {
+  const board = document.getElementById('leaderboard-list');
+  if (!players.length) {
+    board.innerHTML = '<div class="empty-state">No scores yet. Be the first on the board.</div>';
+    return;
+  }
+
+  board.innerHTML = players.map(player => `
+    <div class="leader-row">
+      <div class="leader-rank">#${player.rank}</div>
+      <div class="leader-main">
+        <strong>${escapeHtml(player.name)}</strong>
+        <span>${escapeHtml(player.last_action || 'Joined CardioCheck')}</span>
+      </div>
+      <div class="leader-score">${player.points}<small>pts</small></div>
+    </div>
+  `).join('');
+}
+
+function renderActivity(entries) {
+  const activity = document.getElementById('activity-list');
+  if (!entries.length) {
+    activity.innerHTML = '<div class="empty-state">Log the first heart win.</div>';
+    return;
+  }
+
+  activity.innerHTML = entries.map(entry => `
+    <div class="activity-row">
+      <span>+${entry.points}</span>
+      <div>
+        <strong>${escapeHtml(entry.name)}</strong> ${escapeHtml(entry.action)}
+        ${entry.note ? `<small>${escapeHtml(entry.note)}</small>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;',
+  }[char]));
 }
 
 // ── contact form ───────────────────────────────────────
